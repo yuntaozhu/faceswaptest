@@ -20,7 +20,7 @@
 
       <div id="status">{{ statusMessage }}</div>
       <div class="loader" v-if="isLoading"></div>
-
+      
       <div id="result" v-if="resultUrl">
         <video controls :src="resultUrl"></video>
         <a :href="resultUrl" download="result.mp4">下载视频</a>
@@ -32,21 +32,18 @@
 <script setup>
 import { ref } from 'vue';
 
-// --- 响应式状态定义 ---
 const sourceImageFile = ref(null);
 const targetVideoFile = ref(null);
 const isLoading = ref(false);
 const statusMessage = ref('');
 const resultUrl = ref('');
 
-// --- API 配置 ---
 const API_TOKEN = 'f56ec386ae935002f1a9643893ebd6bc44a4d75b';
-const CORS_PROXY = "https://proxy.cors.sh/";
+const CORS_PROXY = "http://localhost:8081/"; // 使用本地代理
 const REPLICATE_API_URL = CORS_PROXY + "https://api.replicate.com/v1/predictions";
 const REPLICATE_FILES_URL = CORS_PROXY + "https://api.replicate.com/v1/files";
 
 
-// --- 事件处理函数 ---
 const handleSourceImageUpload = (event) => {
   sourceImageFile.value = event.target.files[0];
 };
@@ -55,31 +52,26 @@ const handleTargetVideoUpload = (event) => {
   targetVideoFile.value = event.target.files[0];
 };
 
-// --- 核心业务逻辑方法 ---
 const startFaceSwap = async () => {
   if (!sourceImageFile.value || !targetVideoFile.value) {
     statusMessage.value = '错误：请同时上传源图片和目标视频。';
     return;
   }
 
-  // 重置状态
   isLoading.value = true;
   statusMessage.value = '准备开始...';
   resultUrl.value = '';
 
   try {
-    // 1. 上传文件
     statusMessage.value = '正在上传源图片...';
     const swapImageUrl = await uploadFile(sourceImageFile.value);
-
+    
     statusMessage.value = '源图片上传成功！正在上传目标视频...';
     const targetVideoUrl = await uploadFile(targetVideoFile.value);
-
-    // 2. 创建预测任务
+    
     statusMessage.value = '文件上传完成！正在创建换脸任务...';
     const prediction = await createPrediction(swapImageUrl, targetVideoUrl);
-
-    // 3. 轮询任务状态
+    
     statusMessage.value = '任务已创建，正在处理中... 请耐心等待。';
     await pollPredictionStatus(prediction);
 
@@ -87,33 +79,43 @@ const startFaceSwap = async () => {
     console.error(error);
     statusMessage.value = `发生错误: ${error.message}`;
   } finally {
-    isLoading.value = false; // 无论成功失败，都结束加载状态
+    isLoading.value = false;
   }
 };
 
 const uploadFile = async (file) => {
+  // --- DEBUGGING ---
+  console.log("--- 开始上传文件 ---");
+  console.log("即将上传的文件对象:", file);
+  console.log("文件名 (file.name):", file.name);
+  console.log("文件类型 (file.type):", file.type);
+  
+  const requestBody = {
+    'file_name': file.name,
+    'content_type': file.type
+  };
+  
+  console.log("构造的请求体 (requestBody):", requestBody);
+  console.log("转换后的 JSON 字符串:", JSON.stringify(requestBody));
+  console.log("--- 调试信息结束 ---");
+  // --- END DEBUGGING ---
+
   const uploadUrlResponse = await fetch(REPLICATE_FILES_URL, {
     method: 'POST',
     headers: {
       'Authorization': `Token ${API_TOKEN}`,
       'Content-Type': 'application/json'
     },
-    // ###################################
-    // ###     这是本次修正的关键     ###
-    // ###################################
-    body: JSON.stringify({
-      'file_name': file.name, // 必须是 'file_name'
-      'content_type': file.type
-    })
+    body: JSON.stringify(requestBody)
   });
-
+  
   const uploadUrlData = await uploadUrlResponse.json();
-  if (uploadUrlResponse.status > 299) {
-    throw new Error(`获取上传 URL 失败: ${uploadUrlData.detail}`);
+  if (!uploadUrlResponse.ok) { // 更稳健的错误检查
+    throw new Error(`获取上传 URL 失败: ${uploadUrlData.detail || '未知错误'}`);
   }
 
   const { serving_url, upload_url } = uploadUrlData;
-
+  
   await fetch(upload_url, {
     method: 'PUT',
     headers: { 'Content-Type': file.type },
@@ -149,25 +151,26 @@ const createPrediction = async (swapImageUrl, targetVideoUrl) => {
 const pollPredictionStatus = async (prediction) => {
   const getUrl = CORS_PROXY + `https://api.replicate.com/v1/predictions/${prediction.id}`;
 
-  while (prediction.status !== 'succeeded' && prediction.status !== 'failed') {
-    await new Promise(resolve => setTimeout(resolve, 4000)); // 等待 4 秒
+  let currentPrediction = prediction;
+  while (currentPrediction.status !== 'succeeded' && currentPrediction.status !== 'failed') {
+    await new Promise(resolve => setTimeout(resolve, 4000));
 
     const response = await fetch(getUrl, {
       headers: { 'Authorization': `Token ${API_TOKEN}` }
     });
 
-    prediction = await response.json();
-    if (response.status > 299) {
-      throw new Error(prediction.detail || '查询任务状态失败。');
+    currentPrediction = await response.json();
+    if (!response.ok) {
+      throw new Error(currentPrediction.detail || '查询任务状态失败。');
     }
-    statusMessage.value = `任务状态: ${prediction.status}...`;
+    statusMessage.value = `任务状态: ${currentPrediction.status}...`;
   }
 
-  if (prediction.status === 'succeeded') {
+  if (currentPrediction.status === 'succeeded') {
     statusMessage.value = '换脸成功！';
-    resultUrl.value = prediction.output; // 更新结果 URL 以显示视频
+    resultUrl.value = currentPrediction.output;
   } else {
-    throw new Error(`任务失败: ${prediction.error}`);
+    throw new Error(`任务失败: ${currentPrediction.error}`);
   }
 };
 </script>
